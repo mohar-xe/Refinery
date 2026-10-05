@@ -7,7 +7,10 @@
 > Convention: decisions are append-only, numbered `D-0NN`, never rewritten. If a decision is
 > reversed, add a new entry that supersedes the old one and mark it `SUPERSEDED`.
 >
-> Status: `v0.1` · toy scale (`configs/toy.json`) · full scale (`configs/full.json`) unshipped
+> Status: `v0.2` · toy scale (`configs/toy.json`) running · full scale (`configs/full.json`) unshipped
+>
+> `v0.2` adds §5, the build log: eight decisions that the first end-to-end run
+> forced, including three where the first implementation was quietly wrong.
 
 ---
 
@@ -172,7 +175,7 @@ Truncating either one destroys the corresponding skill.
 arguments too (then the model is trained to emit lossy tool calls — actively harmful).
 **Consequence.** `windowing` is recorded per sample so the ablation is a `jq` filter, not a rerun.
 
-### D-011 — Curriculum: short tool-call-only first, then full
+### D-011 — Curriculum: short tool-call-only first, then full  *(REVISED BY D-017)*
 **Context.** Spec trap #5: small models cannot emit valid tool calls at all without it.
 **Decision.** Stage 1 trains only on trajectories with ≤ 3 tool calls and supervises **only** the
 tool-call tokens. Stage 2 mixes in full trajectories and supervises assistant + tool-call tokens.
@@ -183,6 +186,9 @@ format-learning problem, which is measurable independently.
 format with content).
 **Consequence.** We report the ablation, and `valid_tool_call_rate` is the metric that shows whether
 it worked.
+
+**Revised by D-017.** The *selection rule* for stage 1 was wrong in a way that made the whole
+stage a no-op; the intent here was right.
 
 ### D-012 — Loss mask excludes tool results and system prompt
 **Context.** If you supervise tool outputs, the model learns to predict the environment.
@@ -248,6 +254,11 @@ separately so the number is not flattered).
 non-embedding params, and the embedding table is a different cost centre that must be disclosed.
 **Consequence.** README reports both numbers, and the frontier plot labels the student honestly.
 
+**Measured (see D-020a).** The built model has **1,010,080** non-embedding parameters
+(923,840 in the transformer blocks, 81,920 position embeddings, 4,320 LayerNorm) and **1,104,000**
+total at a 587-token vocabulary — so the embedding table is 8.4% of the model, not the large
+fraction the arithmetic implied. The published number is the measured one.
+
 ---
 
 ## 3. Trap → code map
@@ -275,3 +286,168 @@ Where each spec trap is actually defended. Every row must point at a function th
 - **Whether the majority-vote baseline is a fair "mid-tier contender".** It is cheap and free but it
   is not a model. Decide after the first frontier plot; if it is embarrassing, drop the row rather
   than defend it.
+
+
+---
+
+## 5. Build log — corrections the first end-to-end run forced (v0.2)
+
+Every entry here came from a run that produced a wrong or empty result, not from a design
+review. The three marked **(bug)** were cases where the pipeline looked fine and was silently
+doing the wrong thing.
+
+### D-016 — The document is hidden *entirely*, and its units are clause spans  *(bug)*
+
+**Context.** First implementation used sentences as retrieval units and required ≥ 2 per premise.
+Result: 3 tasks out of a requested 120. SNLI premises are overwhelmingly a single sentence —
+2118 of 3700 test rows have no internal sentence boundary — so the filter rejected 97% of the
+corpus and the manifest was empty.
+
+**Decision.** Split premises into *clause spans* (commas, semicolons, colons, `and`/`but`/`while`/
+`because`), capped at 4 units, and require ≥ 2. Keep the head and the tail when a premise yields
+more than the cap, because an SNLI premise's predicate usually lives at the end.
+
+**Why.** The units concatenate back to the premise, so entailment semantics are untouched — only
+the *presentation* changes. What we need is a document with retrievable parts, and clauses are the
+finest granularity SNLI actually has. Tasks with 1 unit are dropped because retrieval would be a
+no-op and every tool-call metric would be vacuous.
+
+**Rejected.** Batching multiple premises into a synthetic document (changes the task); switching
+corpora (SNLI is the cheapest source of human-written inference judgements); allowing 1-unit
+documents (defeats the tool).
+
+**Consequence.** 119 tasks: 79 base, 40 adversarial. The document is *fully* absent from the
+prompt, which is what makes `lookup` semantically required rather than decorative.
+
+---
+
+### D-017 — Curriculum stage 1 selects the shortest *fraction*, not a step threshold  *(bug)*
+
+**Context.** D-011 said stage 1 trains on trajectories of ≤ 8 steps (toy: ≤ 2). The first trained
+model reported `n_short_samples: 0` — the observed minimum was 3 assistant turns, so stage 1 never
+ran and the curriculum ablation was measuring an empty stage. Nothing crashed; the log line was
+just a number nobody read.
+
+**Decision.** Stage 1 takes the shortest `stage1_fraction` (0.4) of trajectories by rank on
+`n_steps`, ties broken by `sample_id`. The absolute cap survives as an optional bound, applied
+after the rank cut.
+
+**Why.** A threshold can silently select nothing when the corpus shifts — which is exactly what
+happened. A fraction cannot: it is wrong loudly (it takes samples) instead of wrong quietly. This
+is the general lesson, and it is why the training stats block is written to the log rather than
+only to a JSON file nobody opens.
+
+**Consequence.** Stage 1 trains on the 87 shortest trajectories with tool-call-only supervision.
+
+---
+
+### D-018 — The system prompt is a compute budget, not just prose
+
+**Context.** `SYSTEM_PROMPT` v2 was 300 tokens. Measured sequences averaged 485 tokens, so **62%
+of every training example was a constant, masked-out prefix**: pure compute, zero learning
+signal. Profiling showed ~2.2 s per optimizer step at batch 8 × 512 tokens, which put a 24-epoch
+run past 15 minutes on the phone.
+
+**Decision.** Rewrite the prompt to v3 with the same protocol in ~40% of the tokens, and compact
+the tool schema JSON (no indentation — that string is re-tokenised in every sample). Cut epochs
+24 → 12, batch 24, `torch.set_num_threads(8)`.
+
+**Why.** Prompt length is usually treated as a UX concern. In a masked-LM it is a training-cost
+concern, and the fix is free — no behavioural change, only brevity. Same reasoning as dropping
+epochs: the corpus is 217 samples, so 24 epochs was buying memorisation, not generalisation.
+
+**Consequence.** ~29 s/epoch, loss 5.8 → 0.14 over 12 epochs. Any future prompt change must be
+measured against this number, not just reviewed for wording.
+
+---
+
+### D-019 — Digest a tool result only when the digest is shorter  *(bug)*
+
+**Context.** The windowing policy collapsed old tool results to a JSON digest unconditionally.
+Measured result: `windowed` samples came out at 1944 chars against `full_context`'s 1863 — the
+"compression" made the data 4% *larger*, because a retrieved SNLI clause averages ~60 chars while
+the digest envelope costs ~140.
+
+**Decision.** Digest only content longer than `head_chars + DIGEST_OVERHEAD_CHARS`.
+
+**Why.** An unconditional policy cannot be correct across tool-output sizes, and this one was
+actively harmful at the sizes we actually produce. The guard makes the policy's benefit
+conditional on its premise instead of assumed.
+
+**Consequence.** At toy scale `windowed` and `full_context` now compile to byte-identical
+datasets. That is reported as a null result rather than engineered away (see D-020a).
+
+---
+
+### D-020 — The naive windowing arm keeps the tail, with a stated budget
+
+**Decision.** `naive_truncated` = slice the conversation to its last `naive_keep_chars`, dropping
+the system prompt, the task, and all retrieved segments. `naive_keep_chars = 150` at toy scale.
+
+**Why the tail.** Head-keeping was tried first and produced a literal no-op: the bodies average
+447 chars, so any budget above that changes nothing and the ablation measures nothing. Tail-keeping
+bites, and it is the realistic failure — a pipeline under context pressure slices the newest tokens
+and silently supervises answers with no question in context.
+
+**Why 150.** A *stated convention*, not a tuned value: roughly a third of the mean body length. Left
+at the flagship's 24000 the arm is vacuous. The number is in `configs/toy.json` where a reader can
+disagree with it.
+
+**Measured effect on the compiled data:** trainable characters 209 → 100, and supervised
+tool-call characters 20.8 → **0.0**. The naive arm supervises no tool calls at all, so a model
+trained on it cannot learn to call a tool. That is the flagship's windowing claim, demonstrated at
+toy scale by the strongest available version of the effect.
+
+---
+
+### D-020a — Honest null result: `windowed` vs `full_context` is untestable at toy scale
+
+**Finding.** After D-019, the two arms are byte-identical on this corpus. Toy tool outputs are
+shorter than the digest envelope and trajectories fit the 512-token student context, so the policy
+has nothing to do.
+
+**Decision.** Report it as a null result in `reports/ablations.md` with the reason, and do not
+tune anything to make it look like a win. The mechanism is instead exercised indirectly by the
+`naive_truncated` arm (D-020), which is the part of the design that does bite here.
+
+**Why this matters more than a win would.** A fabricated windowing win on a corpus where the
+policy is inert is exactly the kind of number that does not survive a reviewer who checks. The
+LLD records which of our six flagship claims survive toy scale (D-020a belongs in that list) so the
+limitations section of the README can be written from the log rather than from optimism.
+
+---
+
+### D-021 — Task data comes from the datasets-server rows API; pyarrow is not needed
+
+**Context.** D-014 assumed stage 1 would need pyarrow to read an SNLI parquet shard.
+
+**Decision.** Fetch SNLI via `datasets-server.huggingface.co/rows`, which returns JSON, and cache
+the response on disk. pyarrow remains only as a fallback path.
+
+**Why.** It removes the dependency entirely from stages 1–4, which is what D-014 wanted in the
+first place, and the cache makes the manifest rebuildable offline and byte-identically — the cache
+file is the provenance record for the task pool.
+
+**Cost, recorded honestly.** The API caps `length` at 100 rows per request (HTTP 422 above that),
+so rows are paged. This was found by getting a 422, not by reading documentation, and it is now a
+named constant (`ROWS_PAGE`).
+
+---
+
+### D-022 — Cross-component prompt coupling needs a test, not a comment  *(bug)*
+
+**Context.** After the prompt changed `sentences` → `segments`, the offline teacher kept parsing
+the old wording, silently returned zero lookups, and **every one of 328 runs came back
+`NO_TOOL_CALL`**. The pipeline ran to completion and produced a valid, empty-looking dataset.
+
+**Decision.** `tests/test_format_parity.py::test_parser_accepts_exactly_what_the_renderer_emits`
+plus a tolerant regex in the teacher with a comment naming the failure. Any component that parses
+renderer output gets a test that exercises the real renderer output.
+
+**Why.** This is the toy-scale version of spec trap #2, and it is worse than the flagship version:
+in the flagship, drift degrades quality; here it zeroes the dataset. The general rule is that a
+regex reading rendered text is a second owner of the format, and single-owner discipline only
+holds if something enforces it.
+
+**Consequence.** Two of the three bugs found during the build (this one and D-017) were invisible
+in exit codes and would have shipped as "the model just didn't learn".
