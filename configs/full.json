@@ -1,0 +1,86 @@
+{
+  "name": "full",
+  "paths": {
+    "root": "runs/full"
+  },
+  "taskpool": {
+    "source": "swe-gym",
+    "n_tasks": 300,
+    "eval_pct": 20,
+    "split_salt": "full-v1",
+    "synth_fraction": 0.5,
+    "seed_salt": "taskpool-v1",
+    "snli_split": "test",
+    "data_dir": "data"
+  },
+  "farm": {
+    "samples_per_task": 8,
+    "teacher": {
+      "provider": "openrouter",
+      "model": "<frontier model id>",
+      "base_url": "https://openrouter.ai/api/v1",
+      "temperature": 0.8,
+      "top_p": 0.95,
+      "max_tokens": 4096,
+      "timeout_s": 300.0,
+      "prompt_cache": true,
+      "price_per_1k_prompt": 0.0,
+      "price_per_1k_completion": 0.0,
+      "max_retries": 3
+    },
+    "caps": {
+      "max_steps": 30,
+      "max_requests": 30,
+      "max_tokens": 120000,
+      "max_usd": 0.4
+    }
+  },
+  "compiler": {
+    "window": {
+      "strategy": "windowed",
+      "keep_last_n": 3,
+      "digest_head_chars": 480,
+      "naive_keep_chars": 24000
+    }
+  },
+  "trainer": {
+    "student_init": "base+lora",
+    "base_model": "Qwen3-8B",
+    "lora": {
+      "r": 32,
+      "alpha": 64,
+      "dropout": 0.05,
+      "target_modules": "all-linear"
+    },
+    "note": "arch below describes the toy scratch student and is ignored when student_init != scratch",
+    "arch": {
+      "n_layer": 3,
+      "d_model": 160,
+      "n_head": 4,
+      "d_ff": 640,
+      "context": 512,
+      "max_vocab": 8000,
+      "tied_embeddings": true,
+      "dropout": 0.0
+    },
+    "optim": {
+      "epochs": 3,
+      "batch_size": 8,
+      "lr": 0.0002,
+      "warmup_steps": 50,
+      "weight_decay": 0.0,
+      "grad_clip": 1.0,
+      "seed": 7
+    },
+    "stage1_epochs": 1,
+    "stage1_fraction": 0.4
+  },
+  "evalkit": {
+    "seeds": 3,
+    "contenders": [
+      "teacher",
+      "student",
+      "heuristic"
+    ]
+  }
+}
