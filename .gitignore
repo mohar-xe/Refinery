@@ -1,0 +1,44 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environments
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Secrets — never commit. The OpenRouter key is read from $OPENROUTER_API_KEY.
+*.key
+*.pem
+secrets/
+**/credentials*
+
+# Pipeline artifacts (regenerable, large, or run-specific)
+data/
+runs/
+reports/*.json
+reports/*.png
+artifacts/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.gguf
+*.npz
+
+# Keep the report *documents* even though raw outputs are ignored
+!reports/README.md
+!reports/*.md
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
