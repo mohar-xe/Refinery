@@ -14,6 +14,7 @@ A frontier plot built from anything else is a plot of two different experiments.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -22,7 +23,7 @@ import torch
 from refinery.common.protocol import parse_assistant
 from refinery.compiler.render import render_messages
 from refinery.farm.harness import run_one
-from refinery.farm.teacher import HeuristicTeacher, OpenRouterTeacher, TeacherReply
+from refinery.farm.teacher import HeuristicTeacher, OpenRouterTeacher, Teacher, TeacherReply
 
 __all__ = ["StudentTeacher", "build_contender", "evaluate"]
 
@@ -42,7 +43,7 @@ class StudentTeacher(Teacher):
         model: Any,
         tokenizer: Any,
         *,
-        max_new_tokens: int = 96,
+        max_new_tokens: int = 48,
         temperature: float = 0.8,
         top_p: float = 0.95,
         context_override: int | None = None,
@@ -59,6 +60,7 @@ class StudentTeacher(Teacher):
         self.calls = 0
         self.generated_tokens = 0
         self.model_seconds = 0.0
+        self.truncated_turns = 0
 
     @torch.no_grad()
     def complete(self, messages: list[dict], *, temperature: float | None = None) -> TeacherReply:
@@ -72,15 +74,26 @@ class StudentTeacher(Teacher):
 
         started = time.monotonic()
         out: list[int] = []
+        stop = False
         for _ in range(self.max_new_tokens):
             logits = self.model(torch.tensor([ids], dtype=torch.long))[0, -1]
             next_id = self._sample(logits, temp)
             if next_id == self.tok.stoi["<|im_end|>"]:
                 break
             if len(ids) >= context:
+                stop = True
                 break
             ids.append(next_id)
             out.append(next_id)
+            # Stop as soon as the turn is functionally complete rather than
+            # waiting for the cap. Without this a student that never emits
+            # <|im_end|> costs 48 forwards per call *and* is indistinguishable
+            # from one that merely rambles — early stop makes the failure cheap to
+            # observe instead of merely slow.
+            if _turn_complete(self.tok.decode(out)):
+                stop = True
+                break
+        self.truncated_turns += int(stop and not _turn_complete(self.tok.decode(out)))
 
         elapsed = time.monotonic() - started
         self.calls += 1
@@ -108,6 +121,14 @@ class StudentTeacher(Teacher):
         return int(sorted_idx[choice])
 
 
+#: The turn is done once a complete CITE + ANSWER block has been emitted.
+_DONE_RE = re.compile(r"CITE\s*:\s*\d+[^\n]*\n\s*ANSWER\s*:\s*(?:not[_ ])?entailed\s*$", re.I)
+
+
+def _turn_complete(text: str) -> bool:
+    return bool(_DONE_RE.search(text.strip()))
+
+
 def build_contender(
     name: str, cfg: Any, *, seed: int = 0, context_override: int | None = None
 ) -> tuple[Teacher, dict]:
@@ -127,7 +148,10 @@ def build_contender(
             raise RuntimeError("contender 'teacher' needs OPENROUTER_API_KEY")
         return client, {"contender": name, "kind": "api", "model": teacher_cfg.model}
 
-    if name.startswith("student"):
+    # Any trained adapter directory is a valid contender, not just ones whose name
+    # starts with "student" — the windowing ablation arms are named win_*, and a
+    # name-prefix whitelist silently made them unevaluable.
+    if name.startswith("student") or (cfg.model_dir / name / "student.pt").exists():
         from refinery.trainer.model import build_model
         from refinery.trainer.tokenizer import WordTokenizer
 
@@ -219,6 +243,8 @@ def evaluate(
     if isinstance(backend, StudentTeacher):
         summary["model_seconds"] = round(backend.model_seconds, 2)
         summary["local_inference_calls"] = backend.calls
+        summary["generated_tokens"] = backend.generated_tokens
+        summary["truncated_turns"] = backend.truncated_turns
     return summary
 
 

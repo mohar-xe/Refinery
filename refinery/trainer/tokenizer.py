@@ -29,6 +29,14 @@ __all__ = ["WordTokenizer", "SPECIALS", "TOKEN_PATTERN"]
 
 SPECIALS = ("<|pad|>", "<|im_start|>", "<|im_end|>")
 
+#: Detokenization spacing rules (see WordTokenizer.decode).
+#: A newline opens and closes a line, so it takes no space on either side. With
+#: both rules the tokenizer round-trips the assistant grammar exactly.
+# "(" is included for function-call style; "_" so that `not_entailed` stays
+# one visual word (the tokenizer splits it into three tokens).
+_NO_SPACE_BEFORE = frozenset(")]}(,.:;!?_\n")
+_NO_SPACE_AFTER = frozenset("([{_\n")
+
 #: Ordered alternation: specials first so they are never split, then newline, then
 #: words (allowing internal apostrophes), then numbers, then single punctuation
 #: characters. Every token is produced independently of its neighbours.
@@ -105,7 +113,34 @@ class WordTokenizer:
         return ids, mask
 
     def decode(self, ids: list[int]) -> str:
-        return " ".join(self.itos[i] for i in ids if 0 <= i < len(self.itos))
+        """Detokenize faithfully — the student's output must reproduce the surface
+        form the teacher wrote.
+
+        A naive `" ".join(...)` turns a trained `lookup(0)` into `lookup ( 0 )`.
+        Parsing survives that (the protocol regex allows the spaces), so the bug is
+        invisible in every metric — but the student no longer emits the string it
+        was trained on, which is precisely the train/inference skew this project
+        exists to eliminate.
+        """
+        parts: list[str] = []
+        last_tok = ""
+        for tid in ids:
+            if not (0 <= tid < len(self.itos)):
+                continue
+            tok = self.itos[tid]
+            if not parts:
+                parts.append(tok)
+                last_tok = tok
+                continue
+            # Compare against the last *token*, not the accumulated string: a
+            # newline gets glued onto the preceding token, so `parts[-1]` is no
+            # longer a single token and the rule silently stops matching.
+            if tok in _NO_SPACE_BEFORE or last_tok in _NO_SPACE_AFTER:
+                parts[-1] += tok
+            else:
+                parts.append(" " + tok)
+            last_tok = tok
+        return "".join(parts)
 
     # ---- persistence --------------------------------------------------------
     def save(self, path: str | Path) -> Path:

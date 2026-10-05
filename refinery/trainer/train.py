@@ -227,9 +227,13 @@ def train(
         "strategy": strategy,
         "curriculum": curriculum,
         "n_samples": len(samples),
-        "n_stage1_samples": len(short),
-        "stage1_fraction": cfg.trainer.stage1_fraction,
-        "stage1_max_n_steps": max((s["n_steps"] for s in short), default=None),
+        # null (not 0, and not the subset size) when the arm does not run stage 1,
+        # so the number cannot be misread as "the curriculum selected nothing".
+        "n_stage1_samples": len(short) if curriculum else None,
+        "stage1_fraction": cfg.trainer.stage1_fraction if curriculum else None,
+        "stage1_max_n_steps": (
+            max((s["n_steps"] for s in short), default=None) if curriculum else None
+        ),
         "vocab_size": tokenizer.vocab_size,
         "non_embedding_params": model.non_embedding_params(),
         "total_params": model.total_params(),

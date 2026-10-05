@@ -94,3 +94,30 @@ def test_kinds_allow_narrows_the_mask_for_curriculum_stage_1():
 
 def test_token_pattern_keeps_newlines_and_punctuation():
     assert TOKEN_PATTERN.findall("a, b.\nc") == ["a", ",", "b", ".", "\n", "c"]
+
+
+def test_decode_round_trips_the_assistant_grammar_exactly():
+    """Regression guard for the train/inference skew bug.
+
+    A naive `" ".join(...)` decode turned a trained `lookup(0)` into
+    `lookup ( 0 )`. The protocol regex tolerates the spaces, so no metric moved —
+    but the student stopped emitting the string it was trained on, which is the
+    exact failure this project exists to prevent.
+    """
+    samples = [
+        "PLAN: read both.\nlookup(0) lookup(1)\nCITE: 0, 1\nANSWER: entailed",
+        "PLAN: still need segment 1.\nlookup(1)",
+        "PLAN: compared the retrieved segments with the hypothesis.\nCITE: 0, 1\nANSWER: not_entailed",
+        "A boy sits on a stool, smiling, and waves.",
+    ]
+    tok = WordTokenizer.build(samples, max_vocab=8000)
+    for text in samples:
+        assert tok.decode(tok.encode(text)) == text
+
+
+def test_decode_tracks_the_last_token_not_the_accumulated_string():
+    """A newline is glued onto the preceding token, so the spacing rule has to
+    compare against the last token or it silently stops matching after the first
+    line break."""
+    tok = WordTokenizer.build(["a.\nb c"], max_vocab=8000)
+    assert tok.decode(tok.encode("a.\nb c")) == "a.\nb c"
