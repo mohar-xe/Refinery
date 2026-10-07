@@ -24,8 +24,8 @@ from typing import Any
 
 from refinery.common.codes import REASON_CODES, REWARD_HACK_CLASSES, Reason
 from refinery.common.jsonl import read_jsonl
-from refinery.common.protocol import parse_assistant
-from refinery.verifier import antihack
+from refinery.common.protocol import answers_are_freeform, parse_assistant
+from refinery.verifier import antihack, urls as url_checks
 
 __all__ = ["verify", "verify_manifest", "histogram"]
 
@@ -55,7 +55,8 @@ def verify(task: dict, run: dict, *, split_index: dict[str, set[str]] | None = N
     messages = run.get("messages") or []
     exit_reason = run.get("exit", "")
     retrieved = _retrieved_indices(messages)
-    parsed = parse_assistant(_final_assistant(messages))
+    is_url = answers_are_freeform(task)
+    parsed = parse_assistant(_final_assistant(messages), freeform=is_url)
 
     reason: Reason = Reason.VERIFIED_OK
     detail: dict[str, Any] = {}
@@ -80,7 +81,7 @@ def verify(task: dict, run: dict, *, split_index: dict[str, set[str]] | None = N
         detail = {"retrieved": sorted(retrieved)}
 
     # ---- task-level defects ------------------------------------------------
-    elif antihack.label_leak(task):
+    elif _task_leaks(task, is_url):
         reason = Reason.LABEL_LEAK
         detail = {"label": task.get("label")}
 
@@ -95,20 +96,24 @@ def verify(task: dict, run: dict, *, split_index: dict[str, set[str]] | None = N
         reason = Reason.UNSUPPORTED_ANSWER
         detail = {"cited": parsed.cite, "retrieved": sorted(retrieved), "why": "citation_not_retrieved"}
 
-    elif antihack.support_conflict(
+    elif is_url and not _url_supported(task, parsed):
+        reason = Reason.UNSUPPORTED_ANSWER
+        detail = {"cited": parsed.cite, "why": _url_support_reason(task, parsed)}
+
+    elif not is_url and antihack.support_conflict(
         task.get("hypothesis", ""), _cited_texts(task, messages, parsed.cite), parsed.answer or ""
     ):
         reason = Reason.UNSUPPORTED_ANSWER
         detail = {"cited": parsed.cite, "why": "negation_conflict"}
 
-    elif antihack.is_trivial(messages):
+    elif antihack.is_trivial(messages) or (is_url and url_checks.is_echo(parsed.answer, task.get("broken", ""))):
         reason = Reason.TRIVIAL_OUTPUT
-        detail = {"why": "no_reasoning_before_first_tool_call"}
+        detail = {"why": "echo_of_input" if is_url else "no_reasoning_before_first_tool_call"}
 
     # ---- the objective check, last -----------------------------------------
-    elif parsed.answer != task.get("label"):
+    elif not _objective_match(task, parsed, is_url):
         reason = Reason.TEST_FAIL
-        detail = {"predicted": parsed.answer, "gold": task.get("label")}
+        detail = {"predicted": parsed.answer, "gold": task.get("gold_url") if is_url else task.get("label")}
 
     return {
         "run_id": run.get("run_id"),
@@ -132,6 +137,38 @@ def verify(task: dict, run: dict, *, split_index: dict[str, set[str]] | None = N
         "tokens": (run.get("tokens") or {}).get("total"),
         "trajectory_hash": run.get("trajectory_hash"),
     }
+
+
+def _task_leaks(task: dict, is_url: bool) -> bool:
+    """Task-level defect: the answer is already available without doing anything.
+
+    For entailment that means the gold label string appears in the visible text.
+    For URLs it means the damaged input *is* the gold after normalization, i.e.
+    the agent can echo its own input and score — construction refuses such tasks,
+    so this firing means the constructor's guard regressed.
+    """
+    if is_url:
+        return url_checks.is_echo(task.get("gold_url", ""), task.get("broken", ""))
+    return antihack.label_leak(task)
+
+
+def _url_supported(task: dict, parsed) -> bool:
+    supported, _why = _url_support_reason(task, parsed)
+    return supported
+
+
+def _url_support_reason(task: dict, parsed) -> tuple[bool, str]:
+    cited = _cited_texts(task, [], parsed.cite)
+    return url_checks.answer_is_supported(
+        parsed.answer, cited, task.get("prompt_variant", "pick")
+    )
+
+
+def _objective_match(task: dict, parsed, is_url: bool) -> bool:
+    """The objective check, dispatched per task family."""
+    if is_url:
+        return url_checks.is_correct(parsed.answer, task.get("gold_url", ""))
+    return parsed.answer == task.get("label")
 
 
 def verify_manifest(cfg: Any, *, shards: list[Path] | None = None) -> dict:
