@@ -7,7 +7,7 @@
 > Convention: decisions are append-only, numbered `D-0NN`, never rewritten. If a decision is
 > reversed, add a new entry that supersedes the old one and mark it `SUPERSEDED`.
 >
-> Status: `v0.2` · toy scale (`configs/toy.json`) running · full scale (`configs/full.json`) unshipped
+> Status: `v0.3` · **active task: complex legal verification** (`configs/legal.json`) · toy scale (`configs/toy.json`) · url pool (`configs/url.json`) · full scale unshipped
 >
 > `v0.2` adds §5, the build log: eight decisions that the first end-to-end run
 > forced, including three where the first implementation was quietly wrong.
@@ -451,3 +451,117 @@ holds if something enforces it.
 
 **Consequence.** Two of the three bugs found during the build (this one and D-017) were invisible
 in exit codes and would have shipped as "the model just didn't learn".
+
+
+---
+
+## 6. The task pivot (v0.3) — legal claim verification over livelaw.in
+
+The NLI pool worked mechanically but was the wrong research object: entailment over captioned
+images and generic sentences is a solved-ish benchmark, and a portfolio claim resting on it would
+invite "so you ran SNLI". Two things changed, and both are recorded here rather than rewritten.
+
+### D-023 — Candidate/proposition lists are relevance-ordered, with a permuted head
+
+**Context.** The agent may retrieve at most 4 items from a hidden list of ~41 legal propositions.
+Walking that list in document order means it essentially never finds the supporting one — measured,
+the support landed outside the retrievable window in the overwhelming majority of tasks.
+
+**Decision.** Order propositions by lexical coverage of the claim, then deterministically permute the
+top 3. Measured: **151 of 155** supporting propositions land within the top 4.
+
+**Why.** A relevance-ordered list is what a real retrieval-augmented system returns, so the learnable
+policy is "fetch the top hits, then verify each field" rather than "walk the list". The permutation
+is what stops that policy collapsing to "always fetch item 0" — the same failure mode a shuffled
+list causes from the other direction.
+
+**Consequence.** Also the reason the D-020a null result about windowing was re-checked here: legal
+propositions average ~55 characters, still under the digest envelope, so `windowed` and
+`full_context` remain byte-identical. That null result is now measured on two independent corpora,
+which is much stronger evidence than one.
+
+### D-024 — `compose` task family: designed, measured, removed  *(reversal)*
+
+**Context.** The idea was to have a gold that appears in *no* candidate list, so citation checking
+could not be satisfied by citing one item. The construct: take a base candidate's path and splice a
+query string from a *different* candidate onto it.
+
+**Decision.** Removed. It is unguessable, not hard: nothing in the damaged string indicates that the
+query should be borrowed from another host, so the convention had to be guessed rather than inferred.
+Measured: **0 of 80** compose tasks verified.
+
+**Why it is in the log.** "We tried the cleverer design and it was wrong" is more useful to a reader
+than a clean list of things that worked, and it is the same failure class as D-020a's tuning one.
+The replacement (`pick_decoy`) forces the agent to *reject* the top hit by pushing the gold off
+index 0, which is the real skill and is fully inferable.
+
+### D-025 — Legal verification replaces synthetic-task generation as the task source
+
+**Context.** The upstream `para-proposition` repo scrapes livelaw.in, decontextualizes and decomposes
+each judgment into atomic legal propositions, and gates them for atomicity and fidelity. Its own
+README states that `entailed` is not produced at all — stage 1 emits facts and stops.
+
+**Decision.** The claim-to-be-verified stage lives here. Task = a legal claim plus a hidden set of
+that judgment's propositions; the agent retrieves and answers `entailed` / `not_entailed`.
+
+**Why this satisfies D-002 rather than dodging it.** D-002 rejected synthetic tasks because they
+arrive with no independent verification. Here the *premises* are human-checked upstream output
+(56/56 hand-verified on an earlier run) and the labels are verified by construction: a positive
+claim restates a proposition the corpus asserts, a negative is a transformation that cannot be
+entailed by it, and the transform actually applied is recorded per task so any label can be audited
+by reading one field.
+
+**Corpus available now:** 3 judgments, 123 propositions, 123 tasks (60 entailed / 63 not), 89 train /
+34 eval, zero hash overlap. The scraper in the upstream repo reaches 40+ categories of Supreme and
+High Court reporting, so this is a floor, not a ceiling — but scale is not yet claimed.
+
+### D-026 — Legal negatives are built from entity swaps, not from paraphrases
+
+**Decision.** The `not_entailed` families are negation, entity swap, scope overreach, and a broken
+conjunction. Positives are identity, a truth-preserving restatement, and a genuine two-proposition
+conjunction.
+
+**Why this asymmetry.** In legal verification a false "entailed" is a legal error; a false
+"not_entailed" is a missed lead. So the negatives must be the *hard* cases and the positives may be
+easy. An entity swap is the canonical one: swap the Trial Court for the High Court, the year 1975
+for 1998, or Rs.20,000 for Rs.45,000, and roughly 95% of the tokens still match — a lexical
+verifier scores it correct. That is the failure this project exists to catch, and no paraphrase-based
+negative would expose it.
+
+**Consequence.** `valid_tool_call_rate` alone will not tell this story; per-transform accuracy has
+to be in the report, with `entity_swap` and `scope_overreach` as the columns that matter.
+
+### D-027 — Every task records `transform_applied`, not just the requested variant  *(bug)*
+
+`entity_swap` has a deliberate fallback: a proposition with no swappable entity in it gets negated
+instead. The first implementation recorded only the requested variant, so 17 of 19 `entity_swap`
+tasks were actually negations while every table and report said `entity_swap`. Any audit by variant
+would have read the wrong claims, and `entity_swap` accuracy would have been credited to negation
+failures.
+
+Transforms now return `(claim, label, applied)` and `transform_applied` is on the task and in the
+manifest summary: measured, `entity_swap` now genuinely applies to 10 of 19.
+
+### D-028 — Label-integrity bugs found by reading real output, not by tests
+
+Four of them, all silent, all fixed, all recorded because the class of bug is what matters:
+
+| Bug | Symptom |
+|---|---|
+| variant scheduling used `index % 100` | with 41 propositions per article, `index` never reaches 100, so **123/123 tasks came out `entailed`** and the class balance the design depends on did not exist |
+| amount swap string-replace | `"Rs.20,000".replace("20000", "45000")` never matches, so the "wrong" claim was byte-identical to the premise while labelled `entity_swap` |
+| year swap could collide | a fact already containing 1998 could be swapped to 1998, making the negative accidentally true |
+| `entity_swap` fallthrough | as D-027 |
+
+None of these would fail a test that checks "does the pipeline run". All four were found by printing
+five claims and reading them. That is now a habit worth stating: **for a task whose labels are
+generated, the labels need to be read.**
+
+### D-029 — Retrieval starvation is real and was measured here
+
+The first legal farm run produced **267/267 `malformed`**: the teacher retrieved until its lookup
+budget was exhausted and never emitted an `ANSWER` line, so no run produced a parseable trajectory
+and the compiled dataset was empty. The fix was to retrieve to a *target* and then answer.
+
+This is a miniature of the failure mode Project 2 exists to study, and it is worth recording that
+the pipeline's own agent hit it on its first contact with a 41-item document.
