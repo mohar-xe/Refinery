@@ -1,0 +1,77 @@
+{
+  "name": "url",
+  "paths": {
+    "root": "runs/url"
+  },
+  "taskpool": {
+    "source": "url",
+    "n_tasks": 600,
+    "eval_pct": 20,
+    "split_salt": "url-v1",
+    "seed_salt": "url-v1",
+    "synth_fraction": 0.0,
+    "data_dir": "data"
+  },
+  "farm": {
+    "samples_per_task": 4,
+    "teacher": {
+      "provider": "openrouter",
+      "model": "stealth/space-bunny-alpha",
+      "base_url": "https://openrouter.ai/api/v1",
+      "temperature": 0.8,
+      "top_p": 0.95,
+      "max_tokens": 320,
+      "timeout_s": 90.0,
+      "prompt_cache": true,
+      "price_per_1k_prompt": 0.0,
+      "price_per_1k_completion": 0.0,
+      "max_retries": 2
+    },
+    "caps": {
+      "max_steps": 6,
+      "max_requests": 5,
+      "max_tokens": 1500,
+      "max_usd": 0.0
+    }
+  },
+  "compiler": {
+    "window": {
+      "strategy": "windowed",
+      "keep_last_n": 3,
+      "digest_head_chars": 80,
+      "naive_keep_chars": 400
+    }
+  },
+  "trainer": {
+    "student_init": "scratch",
+    "arch": {
+      "n_layer": 3,
+      "d_model": 160,
+      "n_head": 4,
+      "d_ff": 640,
+      "context": 512,
+      "max_vocab": 8000,
+      "tied_embeddings": true,
+      "dropout": 0.0
+    },
+    "optim": {
+      "epochs": 12,
+      "batch_size": 24,
+      "lr": 0.003,
+      "warmup_steps": 60,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0,
+      "seed": 7
+    },
+    "stage1_epochs": 5,
+    "stage1_fraction": 0.4
+  },
+  "evalkit": {
+    "seeds": 3,
+    "contenders": [
+      "teacher",
+      "student",
+      "heuristic"
+    ]
+  }
+}
