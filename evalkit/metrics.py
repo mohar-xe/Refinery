@@ -60,7 +60,12 @@ def summarize_contender(results: list[dict]) -> dict:
         "n": n,
         "pass@1": round(len(passed) / n, 4),
         "label_accuracy": round(len(label_correct) / n, 4),
+        # Syntactic: did it emit a parseable `lookup(...)`? This is the metric the
+        # curriculum claim rests on (spec trap #5 is a *syntax* failure).
         "valid_tool_call_rate": round(sum(1 for r in results if r["valid_tool_call"]) / n, 4),
+        # Behavioural: did a document segment actually come back? Lower than the
+        # syntactic rate means the model asked for indices that do not exist.
+        "retrieval_success_rate": round(sum(1 for r in results if r.get("retrieved")) / n, 4),
         "mean_steps": round(sum(r["steps"] for r in results) / n, 2),
         "mean_tokens": round(sum(tokens) / n, 1),
         "latency_p50_s": _percentile(latencies, 0.50),

@@ -221,6 +221,7 @@ def evaluate(
                 "label_correct": verdict.get("predicted") == task.get("label"),
                 "reason_code": verdict["reason_code"],
                 "valid_tool_call": _valid_tool_call(outcome.record),
+                "retrieved": _retrieved(outcome.record),
                 "steps": outcome.record["steps"],
                 "requests": outcome.record["requests"],
                 "latency_s": outcome.record["wall_s"],
@@ -249,16 +250,20 @@ def evaluate(
 
 
 def _valid_tool_call(run: dict) -> bool:
-    """Did the trajectory contain at least one syntactically valid tool call?
+    """Did the model emit at least one syntactically valid `lookup(...)` call?
 
-    Reported separately from correctness because the two fail differently: a model
-    that never emits a valid call scores ~0 while looking perfectly calibrated
-    (spec trap #5).
+    Strictly a *tool call*, not "produced a parsable turn". The looser version
+    counted any CITE/ANSWER block, which made the naive-truncation arm look
+    *better* than the shipping policy (0.97 vs 0.59) — it learned to answer
+    without ever calling a tool. That is the opposite of the intended result, and
+    it came from the metric, not the model.
     """
     for msg in run.get("messages", []):
-        if msg.get("role") != "assistant":
-            continue
-        parsed = parse_assistant(msg.get("content", ""))
-        if parsed.lookups or parsed.answer:
+        if msg.get("role") == "assistant" and parse_assistant(msg.get("content", "")).lookups:
             return True
     return False
+
+
+def _retrieved(run: dict) -> bool:
+    """Did the harness actually return a document segment to the model?"""
+    return any(m.get("role") == "tool" and m.get("tool_ok") for m in run.get("messages", []))
