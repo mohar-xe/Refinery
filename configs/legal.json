@@ -1,0 +1,84 @@
+{
+  "name": "legal",
+  "paths": {
+    "root": "runs/legal"
+  },
+  "taskpool": {
+    "source": "legal",
+    "split_salt": "legal-v1",
+    "seed_salt": "legal-v1",
+    "eval_pct": 25,
+    "variants": [
+      "restate",
+      "identity",
+      "negation",
+      "entity_swap",
+      "scope_overreach",
+      "conjunction",
+      "broken_conjunction"
+    ],
+    "sources": [
+      "../../scratch/para-proposition/pipeline_output",
+      "../../scratch/para-proposition/pipeline_output_02",
+      "../../scratch/para-proposition/pipeline_output_03"
+    ]
+  },
+  "farm": {
+    "samples_per_task": 3,
+    "teacher": {
+      "provider": "openrouter",
+      "model": "stealth/space-bunny-alpha",
+      "base_url": "https://openrouter.ai/api/v1",
+      "temperature": 0.8,
+      "max_tokens": 400,
+      "timeout_s": 90.0,
+      "prompt_cache": true,
+      "max_retries": 2
+    },
+    "caps": {
+      "max_steps": 6,
+      "max_requests": 5,
+      "max_tokens": 2500,
+      "max_usd": 0.0
+    }
+  },
+  "compiler": {
+    "window": {
+      "strategy": "windowed",
+      "keep_last_n": 3,
+      "digest_head_chars": 220,
+      "naive_keep_chars": 900
+    }
+  },
+  "trainer": {
+    "student_init": "scratch",
+    "arch": {
+      "n_layer": 3,
+      "d_model": 160,
+      "n_head": 4,
+      "d_ff": 640,
+      "context": 768,
+      "max_vocab": 12000,
+      "tied_embeddings": true,
+      "dropout": 0.0
+    },
+    "optim": {
+      "epochs": 30,
+      "batch_size": 16,
+      "lr": 0.003,
+      "warmup_steps": 60,
+      "weight_decay": 0.01,
+      "grad_clip": 1.0,
+      "seed": 7
+    },
+    "stage1_fraction": 0.4,
+    "stage1_epochs": 8
+  },
+  "evalkit": {
+    "seeds": 3,
+    "contenders": [
+      "student",
+      "heuristic"
+    ]
+  }
+}

@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass, field
 
 from refinery.common.protocol import TOOL_NAME
+from refinery.compiler.render import MAX_LOOKUPS
 from refinery.config import TeacherCfg
 
 __all__ = ["TeacherReply", "Teacher", "OpenRouterTeacher", "HeuristicTeacher", "build_teacher"]
@@ -158,7 +159,13 @@ class HeuristicTeacher(Teacher):
         retrieved = {m["evidence_index"] for m in messages if "evidence_index" in m}
 
         n = _doc_len(messages)
-        remaining = [i for i in range(n) if i not in retrieved]
+        # Retrieve up to a *target* and then answer, rather than retrieving until the
+        # budget runs out. Retrieving-until-exhausted looks correct and is a trap:
+        # it spends every lookup on retrieval, never emits the ANSWER line, and the
+        # run dies as `malformed` with an empty dataset downstream. This is the
+        # retrieval-starvation failure mode Project 2 studies, in miniature.
+        target = min(n, max(1, MAX_LOOKUPS - 1)) if n else 0
+        remaining = [i for i in range(n) if i not in retrieved][: max(0, target - len(retrieved))]
         if remaining:
             idx = remaining[0]
             return TeacherReply(
@@ -192,7 +199,13 @@ def _doc_len(messages: list[dict]) -> int:
             # wording change in `compiler/render.py` would otherwise silently
             # produce a teacher that never calls the tool. Covered by
             # `tests/test_prompt_contract.py`.
-            match = re.search(r"DOCUMENT:\s*(\d+)\s+(?:segments|sentences)", msg.get("content", ""))
+            # Tolerant on purpose: this parses the renderer's prompt text, so a
+            # wording change in `compiler/render.py` would otherwise silently
+            # produce a teacher that never calls the tool. Covered by
+            # `tests/test_prompt_contract.py`.
+            match = re.search(
+                r"(?:DOCUMENT|PROPOSITIONS|CANDIDATES):\s*(\d+)", msg.get("content", "")
+            )
             if match:
                 return int(match.group(1))
     return 0
@@ -201,7 +214,7 @@ def _doc_len(messages: list[dict]) -> int:
 def _last_user_text(messages: list[dict]) -> str:
     for msg in reversed(messages):
         if msg["role"] == "user":
-            match = re.search(r"HYPOTHESIS:\s*(.+)", msg.get("content", ""))
+            match = re.search(r"(?:HYPOTHESIS|CLAIM|DAMAGED URL):\s*(.+)", msg.get("content", ""))
             if match:
                 return match.group(1).strip()
     return ""

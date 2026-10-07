@@ -32,10 +32,20 @@ def _print(obj) -> None:
 
 # --- stages -----------------------------------------------------------------
 def cmd_taskpool(args) -> int:
-    from refinery.taskpool.build import build_manifest
-
     cfg = _cfg(args)
-    _print(build_manifest(cfg))
+    source = args.source or cfg.taskpool.get("source", "snli")
+    if source == "url":
+        from refinery.taskpool.urls import build_url_manifest
+
+        _print(build_url_manifest(cfg))
+    elif source == "legal":
+        from refinery.taskpool.legal import build_legal_manifest
+
+        _print(build_legal_manifest(cfg))
+    else:
+        from refinery.taskpool.build import build_manifest
+
+        _print(build_manifest(cfg))
     return 0
 
 
@@ -166,9 +176,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="configs/toy.json", help="scale config JSON")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("taskpool", help="build the task manifest + hash-walled split").set_defaults(
-        func=cmd_taskpool
-    )
+    p_tp = sub.add_parser("taskpool", help="build the task manifest + hash-walled split")
+    p_tp.add_argument("--source", default=None, choices=["snli", "url", "legal"])
+    p_tp.set_defaults(func=cmd_taskpool)
 
     p_farm = sub.add_parser("farm", help="run k samples/task against the teacher")
     p_farm.add_argument("--teacher", default="api", choices=["api", "heuristic"])
