@@ -1,0 +1,15 @@
+{
+  "title": "Refinery - legal verification flywheel",
+  "code_file": "run_pipeline.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "keywords": ["refinery", "distillation", "legal", "nli", "agents", "lora"],
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": ["Qwen/Qwen3.5-4B"]
+}

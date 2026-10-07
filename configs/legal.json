@@ -18,9 +18,7 @@
       "broken_conjunction"
     ],
     "sources": [
-      "../../scratch/para-proposition/pipeline_output",
-      "../../scratch/para-proposition/pipeline_output_02",
-      "../../scratch/para-proposition/pipeline_output_03"
+      "data/legal/propositions.json"
     ]
   },
   "farm": {
