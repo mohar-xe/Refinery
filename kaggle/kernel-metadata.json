@@ -1,15 +1,16 @@
 {
-  "title": "Refinery - legal verification flywheel",
+  "id": "malow007/refinery-legal-verification-flywheel",
+  "title": "Refinery Legal Verification Flywheel",
   "code_file": "run_pipeline.py",
   "language": "python",
   "kernel_type": "script",
-  "is_private": true,
-  "enable_gpu": true,
-  "enable_tpu": false,
-  "enable_internet": true,
-  "keywords": ["refinery", "distillation", "legal", "nli", "agents", "lora"],
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "machine_shape": "gpu-t4-2x",
   "dataset_sources": [],
   "competition_sources": [],
   "kernel_sources": [],
-  "model_sources": ["Qwen/Qwen3.5-4B"]
+  "model_sources": []
 }

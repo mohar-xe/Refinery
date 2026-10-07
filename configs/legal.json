@@ -18,7 +18,7 @@
       "broken_conjunction"
     ],
     "sources": [
-      "data/legal/propositions.json"
+      "corpus/legal_propositions.json"
     ]
   },
   "farm": {
