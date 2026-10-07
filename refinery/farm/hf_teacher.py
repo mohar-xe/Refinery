@@ -31,6 +31,7 @@ This class implements the same `complete()` surface as the API teachers, so
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -39,6 +40,33 @@ from refinery.compiler.render import render_messages
 from refinery.farm.teacher import TeacherReply
 
 __all__ = ["HFTeacher"]
+
+#: Leading artefacts seen from the first GPU run, each a real failure mode.
+_ROLE_ECHO = re.compile(r"^\s*(?:<\|[^|]*\|>\s*)?(?:assistant|model)\b\s*[:\n]", re.IGNORECASE)
+_THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_OPEN_THINK = re.compile(r"<think>.*", re.DOTALL | re.IGNORECASE)
+
+
+def _clean_completion(text: str) -> str:
+    """Strip what the model emits around the answer rather than around the protocol.
+
+    Measured on the first 4B run, 267 trajectories:
+      * every completion began with a literal ``assistant\n`` role echo, because the
+        prompt's trailing ``<|im_start|>assistant`` block was not presented the way
+        Qwen's template presents it, so the model repaired the transcript by writing
+        the role label as text;
+      * reasoning models emit ``<think>`` blocks, which consumed the whole token
+        budget on 86 of 267 runs (STEP_CAP) before ever reaching the answer.
+
+    Both are stripped here rather than in the parser, because they are properties of
+    *this* backend. `parse_assistant` stays strict: it should reject a malformed
+    trajectory, not a well-formed one wrapped in model boilerplate.
+    """
+    text = _THINK.sub("", text)
+    text = _OPEN_THINK.sub("", text)
+    text = _ROLE_ECHO.sub("", text)
+    return text.strip()
+
 
 #: Candidates tried in order by `resolve_model_id`. Qwen3 is first because its
 #: tokenizer and chat format are the ChatML this project renders, and 4B fits a
@@ -80,7 +108,8 @@ class HFTeacher:
         *,
         dtype: str = "fp16",
         device: str = "cuda",
-        max_new_tokens: int = 200,
+        max_new_tokens: int = 320,
+        enable_thinking: bool = False,
         temperature: float = 0.8,
         top_p: float = 0.95,
         use_native_template: bool = False,
@@ -93,6 +122,7 @@ class HFTeacher:
         self.temperature = temperature
         self.top_p = top_p
         self.use_native_template = use_native_template
+        self.enable_thinking = enable_thinking
         self.seed = seed
 
         self._tok: Any = None
@@ -164,7 +194,7 @@ class HFTeacher:
         elapsed = time.monotonic() - started
 
         new_tokens = output[0][encoded["input_ids"].shape[1]:]
-        content = self._tok.decode(new_tokens, skip_special_tokens=True)
+        content = _clean_completion(self._tok.decode(new_tokens, skip_special_tokens=True))
         self.calls += 1
         self.prompt_tokens += int(encoded["input_ids"].shape[1])
         self.completion_tokens += int(new_tokens.shape[0])
@@ -208,4 +238,9 @@ class HFTeacher:
                 merged[-1]["content"] += "\n\n" + item["content"]
             else:
                 merged.append(item)
-        return self._tok.apply_chat_template(merged, tokenize=False, add_generation_prompt=True)
+        kwargs = {"tokenize": False, "add_generation_prompt": True}
+        try:
+            return self._tok.apply_chat_template(merged, enable_thinking=self.enable_thinking, **kwargs)
+        except TypeError:
+            # Older templates have no thinking switch; strip the block downstream.
+            return self._tok.apply_chat_template(merged, **kwargs)

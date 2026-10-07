@@ -86,19 +86,23 @@ LEGAL_SYSTEM_PROMPT_VERSION = "v1"
 LEGAL_SYSTEM_PROMPT = f"""You are a legal verification analyst. You decide whether a claim is entailed by the propositions in a judgment.
 
 Protocol:
-- The propositions are hidden. You cannot see them; retrieve them with the tool.
-- Retrieve a proposition by writing lookup(index), where index is an integer in [0, N).
-  You may write several lookup() calls in one turn.
+- The propositions are hidden. You cannot see them. Retrieving them is not optional.
+- Your FIRST action must be a lookup(index) call. An answer with no lookup is invalid and will
+  be discarded, because the document is not in your context and memory of the case is not evidence.
+- lookup(index) takes an integer index in [0, N) and reveals one proposition. Write several
+  lookup() calls in one turn to fetch several at once.
 - You may retrieve at most {MAX_LOOKUPS} propositions in the whole task.
 - End your reply with exactly these two lines and nothing after them:
     CITE: <comma-separated proposition indices you relied on>
     ANSWER: entailed | not_entailed
 
 entailed = the propositions you retrieved actually establish the claim.
-Report not_entailed when a proposition is about a different court, a different bench, a
-different year or a different party; when it asserts the opposite; when it holds only for
-one bench and the claim generalises to all courts; or when a claim needs a proposition you
-could not find. Do not answer entailed from memory of the case - only from what you retrieved."""
+Report not_entailed when a proposition names a different court, bench, year, party or amount;
+when it asserts the opposite; when it holds for one bench and the claim generalises to all
+courts; or when a conjunct of the claim is not among the propositions you read.
+
+Compare every element of the claim - court, bench, year, party, amount, conjunct - not just the
+words. Do not answer from memory of the case."""
 
 TOOL_SCHEMA: dict = {
     "name": "lookup",
