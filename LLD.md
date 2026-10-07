@@ -7,7 +7,7 @@
 > Convention: decisions are append-only, numbered `D-0NN`, never rewritten. If a decision is
 > reversed, add a new entry that supersedes the old one and mark it `SUPERSEDED`.
 >
-> Status: `v0.3` · **active task: complex legal verification** (`configs/legal.json`) · toy scale (`configs/toy.json`) · url pool (`configs/url.json`) · full scale unshipped
+> Status: `v0.4` · **active task: complex legal verification** (`configs/legal.json`) · toy scale (`configs/toy.json`) · url pool (`configs/url.json`) · full scale unshipped
 >
 > `v0.2` adds §5, the build log: eight decisions that the first end-to-end run
 > forced, including three where the first implementation was quietly wrong.
@@ -565,3 +565,73 @@ and the compiled dataset was empty. The fix was to retrieve to a *target* and th
 
 This is a miniature of the failure mode Project 2 exists to study, and it is worth recording that
 the pipeline's own agent hit it on its first contact with a 41-item document.
+
+
+---
+
+## 7. The data engine moved to Kaggle (v0.4)
+
+### D-030 — A frontier API teacher is unaffordable, so the teacher is an open 4B on our own GPU
+
+**The measurement.** `GET /api/v1/auth/key` reports:
+
+```json
+"is_free_tier": true,
+"free_model_daily_requests": { "used": 0, "limit": 50, "remaining": 50 }
+```
+
+**50 requests per day, account-wide.** The teacher this project was designed around,
+`stealth/space-bunny-alpha`, allowed 1000/day and now returns
+`{"error":"No endpoints found"}` — nothing matching "bunny" or "stealth" remains in a
+465-model catalog. At ~2 requests per agent run, the legal farm (89 tasks × k=3) is ~534
+requests: **10.7 days**. Eval adds 4.1. A frontier teacher cannot be the data engine.
+
+**Decision.** Generation *and* training move to Kaggle (2× T4, 30 GPU-hours per week) with
+`Qwen/Qwen3.5-4B` as the teacher. OpenRouter's 50 daily requests are spent on one thing only:
+a thin but genuine frontier measurement on the held-out eval set, reported with its confidence
+interval rather than dressed up.
+
+**Why this is a better result than the API path, not just a cheaper one.** 30 GPU-hours a week
+is a larger budget than 50 API calls a day, and it is *ours*, so the data engine is reproducible
+rather than rate-limited by a shared pool. It also changes what the project claims, in a way worth
+stating plainly: this is **distillation from an open 4B teacher, not from a frontier model.**
+
+**What survives that change.** The thesis was never "a small model can match a frontier model".
+It was "the production trace → small-model flywheel works end to end, and here is each stage's
+measured contribution." Every stage is unchanged. The verification gate is what makes distilling
+from your own 4B legitimate at all: unverified self-generated data is the AgentTuning failure
+mode, and the gate is the difference. This is STaR with a small teacher — the reading stack's
+first entry — rather than STaR with a frontier one.
+
+**What it costs.** A weaker teacher ceiling, and a "frontier" comparison that is 50 requests wide
+instead of 3,000. Both are stated wherever a number from them appears.
+
+**Revisit if** credits exist: change `teacher.model` and the prices in the config. Nothing else.
+
+### D-031 — The GPU teacher is prompted with our renderer, not its own chat template
+
+**Decision.** `HFTeacher._render()` sends `render_messages(...)` — the exact byte sequence the
+student is trained on — rather than `tokenizer.apply_chat_template`. The candidate list is Qwen3
+first for this reason: Qwen's native format *is* ChatML, so our rendering is not a hack applied to
+a model that expects something else. `use_native_template=True` flips it, so the cost of matching
+formats can be measured instead of assumed.
+
+**Why.** The whole transfer story depends on the teacher generating the surface form the student
+is supervised on. A teacher reading a different template emits different bytes, and the student
+learns to fix that mismatch rather than the task.
+
+**Also enforced.** The teacher receives only the conversation, never the task record — the same
+information restriction the student faces at eval, so a gap in the dataset is a gap the teacher
+could not have filled.
+
+### D-032 — Operational facts worth not rediscovering
+
+| Fact | Where it bit |
+|---|---|
+| Corpus snapshot under `data/` is invisible to git — `data/` is gitignored for artifacts | kernel died at stage 1 with "no propositions found"; inputs live in `corpus/` |
+| Kaggle `kernel-metadata.json` needs `"id": "owner/slug"`, and a bare slug is rejected as invalid | four failed pushes before reading `kaggle kernels init` |
+| The push target is derived from the *title*, not the `id`; the id must match | kernel landed as `malow007/refinery-legal-verification-flywheel` |
+| `model_sources` needs a versioned instance path; transformers pulling from the Hub needs none | rejected the push |
+| `nvidia-smi` is absent in Kaggle kernels | probe with `torch.cuda.device_count()` — confirmed 2× Tesla T4, 14.56 GB each, capability 7.5 |
+| T4 is Ampere-era, no native bf16 | teacher loads in fp16, not bf16 |
+| OpenRouter `:free` models are additionally rate-limited *upstream* (429 from the provider) | retries in `OpenRouterTeacher` absorb it; the ledger records the provider error rate |
